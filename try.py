@@ -5,6 +5,7 @@ import time
 
 pygame.init()
 
+# Constants & Display Setup
 SIZE = 4
 TILE_SIZE = 100
 MARGIN = 10
@@ -27,6 +28,9 @@ TILE_COLORS = {
     2048: (237, 194, 46),
 }
 
+# -------------------------
+# Game Functions
+# -------------------------
 def initialize_board():
     board = np.zeros((SIZE, SIZE), dtype=int)
     add_new_tile(board)
@@ -73,7 +77,7 @@ def move_down(board):
 
 def is_game_over(board):
     if np.any(board == 2048):
-        return True  
+        return True  # win condition reached
     if np.any(board == 0):
         return False
     for r in range(SIZE):
@@ -102,10 +106,13 @@ def draw_board(board, screen):
                                                   r * (TILE_SIZE + MARGIN) + MARGIN + TILE_SIZE // 2))
                 screen.blit(text, text_rect)
 
+# -------------------------
+# Caching & Helper Functions
+# -------------------------
 def board_to_tuple(board):
     return tuple(map(tuple, board))
 
-cache = {}  
+cache = {}  # Global cache for Expectimax evaluations
 
 def potential_merges(board):
     merges = 0
@@ -120,9 +127,11 @@ def potential_merges(board):
     return merges
 
 def improved_heuristic(board):
+    # Empty cells and max tile
     empty = np.count_nonzero(board == 0)
     max_tile = np.max(board)
     
+    # Smoothness: penalize differences between adjacent tiles
     smoothness = 0
     for r in range(SIZE):
         for c in range(SIZE - 1):
@@ -133,17 +142,21 @@ def improved_heuristic(board):
             if board[r, c] and board[r + 1, c]:
                 smoothness -= abs(board[r, c] - board[r + 1, c])
     
+    # Monotonicity: reward rows/cols that are non-increasing
     mono_score = 0
     for row in board:
         mono_score += sum(row[i] >= row[i+1] for i in range(SIZE - 1))
     for col in board.T:
         mono_score += sum(col[i] >= col[i+1] for i in range(SIZE - 1))
     
+    # Corner bonus: encourage max tile to be in a corner
     corners = [board[0, 0], board[0, -1], board[-1, 0], board[-1, -1]]
     corner_bonus = max_tile * 4 if max_tile in corners else -1500
     
+    # Merge bonus: reward potential merges
     merge_bonus = potential_merges(board) * 200
     
+    # Pattern bonus: snake/spiral pattern weight matrix
     WEIGHTS = np.array([
         [16,  8,  4,  2],
         [7,   6,  5,  1],
@@ -152,6 +165,7 @@ def improved_heuristic(board):
     ])
     pattern_score = np.sum(board * WEIGHTS)
     
+    # Combine factors (tweak multipliers as needed)
     return (empty * 270 +
             smoothness * 1.0 +
             mono_score * 50 +
@@ -160,6 +174,7 @@ def improved_heuristic(board):
             pattern_score)
 
 def get_possible_moves(board):
+    # Prioritize moves: down > right > left > up
     return [
         (move_down, move_down(board.copy())),
         (move_right, move_right(board.copy())),
@@ -167,6 +182,9 @@ def get_possible_moves(board):
         (move_up, move_up(board.copy()))
     ]
 
+# -------------------------
+# Expectimax with Caching
+# -------------------------
 def expectimax(board, depth, is_max):
     key = (board_to_tuple(board), depth, is_max)
     if key in cache:
@@ -200,6 +218,9 @@ def expectimax(board, depth, is_max):
         cache[key] = score
         return score
 
+# -------------------------
+# Monte Carlo Rollout for Tie-breaking
+# -------------------------
 def monte_carlo_rollout(board, num_rollouts=5, rollout_depth=5):
     total = 0
     for _ in range(num_rollouts):
@@ -216,6 +237,9 @@ def monte_carlo_rollout(board, num_rollouts=5, rollout_depth=5):
         total += improved_heuristic(b)
     return total / num_rollouts
 
+# -------------------------
+# Best Move via Iterative Deepening
+# -------------------------
 def best_expectimax_move_depth(board, depth):
     moves = get_possible_moves(board)
     candidate_scores = []
@@ -224,8 +248,10 @@ def best_expectimax_move_depth(board, depth):
             continue
         score = expectimax(new_board, depth - 1, False)
         candidate_scores.append((score, func))
+    # Sort candidates by score descending
     candidate_scores.sort(key=lambda x: x[0], reverse=True)
     if candidate_scores:
+        # If top two scores are close, run Monte Carlo rollouts for tie-breaker
         if len(candidate_scores) > 1 and abs(candidate_scores[0][0] - candidate_scores[1][0]) < 50:
             m1 = monte_carlo_rollout(candidate_scores[0][1](board.copy()))
             m2 = monte_carlo_rollout(candidate_scores[1][1](board.copy()))
@@ -246,6 +272,9 @@ def best_move_iterative(board, time_limit=0.1):
         depth += 1
     return best_move
 
+# -------------------------
+# Main Game Loop
+# -------------------------
 def main():
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("2048 AI - Iterative Deepening + Monte Carlo")
@@ -253,7 +282,7 @@ def main():
     clock = pygame.time.Clock()
     steps = 0
     global cache
-    cache = {}  
+    cache = {}  # Reset cache for each game
 
     running = True
     while running:
@@ -266,6 +295,7 @@ def main():
             running = False
             continue
 
+        # Use iterative deepening to choose the best move within a time limit
         best_move = best_move_iterative(board, time_limit=0.1)
         if best_move:
             board = best_move(board)
