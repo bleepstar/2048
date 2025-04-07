@@ -1,10 +1,10 @@
 import pygame
 import numpy as np
 import random
+import time
 
 pygame.init()
 
-# Constants
 SIZE = 4
 TILE_SIZE = 100
 MARGIN = 10
@@ -40,19 +40,19 @@ def add_new_tile(board):
         board[r, c] = 2 if random.random() < 0.9 else 4
 
 def compress(board):
-    new = np.zeros_like(board)
+    new_board = np.zeros((SIZE, SIZE), dtype=int)
     for r in range(SIZE):
         pos = 0
         for c in range(SIZE):
             if board[r, c] != 0:
-                new[r, pos] = board[r, c]
+                new_board[r, pos] = board[r, c]
                 pos += 1
-    return new
+    return new_board
 
 def merge(board):
     for r in range(SIZE):
         for c in range(SIZE - 1):
-            if board[r, c] == board[r, c + 1] and board[r, c] != 0:
+            if board[r, c] != 0 and board[r, c] == board[r, c + 1]:
                 board[r, c] *= 2
                 board[r, c + 1] = 0
     return board
@@ -72,14 +72,18 @@ def move_down(board):
     return np.rot90(move_left(np.rot90(board, -1)), 1)
 
 def is_game_over(board):
-    if np.any(board == 2048): return True
-    if np.any(board == 0): return False
+    if np.any(board == 2048):
+        return True  
+    if np.any(board == 0):
+        return False
     for r in range(SIZE):
         for c in range(SIZE - 1):
-            if board[r, c] == board[r, c + 1]: return False
+            if board[r, c] == board[r, c + 1]:
+                return False
     for r in range(SIZE - 1):
         for c in range(SIZE):
-            if board[r, c] == board[r + 1, c]: return False
+            if board[r, c] == board[r + 1, c]:
+                return False
     return True
 
 def draw_board(board, screen):
@@ -88,32 +92,38 @@ def draw_board(board, screen):
         for c in range(SIZE):
             value = board[r, c]
             color = TILE_COLORS.get(value, (60, 58, 50))
-            pygame.draw.rect(screen, color, (c * (TILE_SIZE + MARGIN) + MARGIN,
-                                             r * (TILE_SIZE + MARGIN) + MARGIN, TILE_SIZE, TILE_SIZE))
+            rect = (c * (TILE_SIZE + MARGIN) + MARGIN,
+                    r * (TILE_SIZE + MARGIN) + MARGIN,
+                    TILE_SIZE, TILE_SIZE)
+            pygame.draw.rect(screen, color, rect)
             if value != 0:
                 text = FONT.render(str(value), True, (100, 100, 100))
-                rect = text.get_rect(center=(c * (TILE_SIZE + MARGIN) + MARGIN + TILE_SIZE // 2,
-                                             r * (TILE_SIZE + MARGIN) + MARGIN + TILE_SIZE // 2))
-                screen.blit(text, rect)
+                text_rect = text.get_rect(center=(c * (TILE_SIZE + MARGIN) + MARGIN + TILE_SIZE // 2,
+                                                  r * (TILE_SIZE + MARGIN) + MARGIN + TILE_SIZE // 2))
+                screen.blit(text, text_rect)
+
+def board_to_tuple(board):
+    return tuple(map(tuple, board))
+
+cache = {}  
 
 def potential_merges(board):
     merges = 0
     for r in range(SIZE):
         for c in range(SIZE - 1):
-            if board[r, c] == board[r, c + 1] and board[r, c] != 0:
+            if board[r, c] != 0 and board[r, c] == board[r, c + 1]:
                 merges += 1
     for r in range(SIZE - 1):
         for c in range(SIZE):
-            if board[r, c] == board[r + 1, c] and board[r, c] != 0:
+            if board[r, c] != 0 and board[r, c] == board[r + 1, c]:
                 merges += 1
     return merges
 
-def heuristic(board):
+def improved_heuristic(board):
     empty = np.count_nonzero(board == 0)
     max_tile = np.max(board)
+    
     smoothness = 0
-    mono_score = 0
-
     for r in range(SIZE):
         for c in range(SIZE - 1):
             if board[r, c] and board[r, c + 1]:
@@ -122,62 +132,130 @@ def heuristic(board):
         for c in range(SIZE):
             if board[r, c] and board[r + 1, c]:
                 smoothness -= abs(board[r, c] - board[r + 1, c])
-
+    
+    mono_score = 0
     for row in board:
         mono_score += sum(row[i] >= row[i+1] for i in range(SIZE - 1))
     for col in board.T:
         mono_score += sum(col[i] >= col[i+1] for i in range(SIZE - 1))
-
-    corner_bonus = max_tile * 2 if max_tile in [board[0, 0], board[0, -1], board[-1, 0], board[-1, -1]] else 0
-
-    return empty * 250 + mono_score * 50 + smoothness + corner_bonus + potential_merges(board) * 200
+    
+    corners = [board[0, 0], board[0, -1], board[-1, 0], board[-1, -1]]
+    corner_bonus = max_tile * 4 if max_tile in corners else -1500
+    
+    merge_bonus = potential_merges(board) * 200
+    
+    WEIGHTS = np.array([
+        [16,  8,  4,  2],
+        [7,   6,  5,  1],
+        [3,   2,  1,  0],
+        [1,   0, -1, -2]
+    ])
+    pattern_score = np.sum(board * WEIGHTS)
+    
+    return (empty * 270 +
+            smoothness * 1.0 +
+            mono_score * 50 +
+            corner_bonus +
+            merge_bonus +
+            pattern_score)
 
 def get_possible_moves(board):
-    return [(move_down, move_down(board.copy())),
-            (move_right, move_right(board.copy())),
-            (move_left, move_left(board.copy())),
-            (move_up, move_up(board.copy()))]
+    return [
+        (move_down, move_down(board.copy())),
+        (move_right, move_right(board.copy())),
+        (move_left, move_left(board.copy())),
+        (move_up, move_up(board.copy()))
+    ]
 
 def expectimax(board, depth, is_max):
+    key = (board_to_tuple(board), depth, is_max)
+    if key in cache:
+        return cache[key]
+    
     if depth == 0 or is_game_over(board):
-        return heuristic(board)
+        score = improved_heuristic(board)
+        cache[key] = score
+        return score
+
     if is_max:
-        return max(expectimax(new_board, depth - 1, False)
-                   for _, new_board in get_possible_moves(board)
-                   if not np.array_equal(board, new_board))
+        best = -np.inf
+        for _, new_board in get_possible_moves(board):
+            if np.array_equal(board, new_board):
+                continue
+            best = max(best, expectimax(new_board, depth - 1, False))
+        cache[key] = best
+        return best
     else:
         empty = [(r, c) for r in range(SIZE) for c in range(SIZE) if board[r, c] == 0]
         if not empty:
-            return heuristic(board)
+            score = improved_heuristic(board)
+            cache[key] = score
+            return score
         score = 0
         for r, c in empty:
             for val, prob in [(2, 0.9), (4, 0.1)]:
                 board_copy = board.copy()
                 board_copy[r, c] = val
                 score += prob * expectimax(board_copy, depth - 1, True) / len(empty)
+        cache[key] = score
         return score
 
-def best_expectimax_move(board):
-    empty_count = np.count_nonzero(board == 0)
-    depth = 4 if empty_count >= 5 else 3
-    best_score = -np.inf
-    best_move = None
-    for func, new_board in get_possible_moves(board):
-        if np.array_equal(board, new_board): continue
+def monte_carlo_rollout(board, num_rollouts=5, rollout_depth=5):
+    total = 0
+    for _ in range(num_rollouts):
+        b = board.copy()
+        d = rollout_depth
+        while d > 0 and not is_game_over(b):
+            moves = get_possible_moves(b)
+            if not moves:
+                break
+            move_func, new_board = random.choice(moves)
+            b = new_board
+            add_new_tile(b)
+            d -= 1
+        total += improved_heuristic(b)
+    return total / num_rollouts
+
+def best_expectimax_move_depth(board, depth):
+    moves = get_possible_moves(board)
+    candidate_scores = []
+    for func, new_board in moves:
+        if np.array_equal(board, new_board):
+            continue
         score = expectimax(new_board, depth - 1, False)
-        if score > best_score:
-            best_score = score
-            best_move = func
+        candidate_scores.append((score, func))
+    candidate_scores.sort(key=lambda x: x[0], reverse=True)
+    if candidate_scores:
+        if len(candidate_scores) > 1 and abs(candidate_scores[0][0] - candidate_scores[1][0]) < 50:
+            m1 = monte_carlo_rollout(candidate_scores[0][1](board.copy()))
+            m2 = monte_carlo_rollout(candidate_scores[1][1](board.copy()))
+            best_move = candidate_scores[0][1] if m1 > m2 else candidate_scores[1][1]
+        else:
+            best_move = candidate_scores[0][1]
+        return best_move
+    return None
+
+def best_move_iterative(board, time_limit=0.1):
+    start_time = time.time()
+    best_move = None
+    depth = 2  # starting depth
+    while time.time() - start_time < time_limit:
+        move = best_expectimax_move_depth(board, depth)
+        if move is not None:
+            best_move = move
+        depth += 1
     return best_move
 
 def main():
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("2048 AI - Expectimax Beast Mode")
+    pygame.display.set_caption("2048 AI - Iterative Deepening + Monte Carlo")
     board = initialize_board()
     clock = pygame.time.Clock()
     steps = 0
-    running = True
+    global cache
+    cache = {}  
 
+    running = True
     while running:
         draw_board(board, screen)
         pygame.display.flip()
@@ -188,7 +266,7 @@ def main():
             running = False
             continue
 
-        best_move = best_expectimax_move(board)
+        best_move = best_move_iterative(board, time_limit=0.1)
         if best_move:
             board = best_move(board)
             add_new_tile(board)
@@ -199,7 +277,6 @@ def main():
                 running = False
 
         clock.tick(60)
-
     pygame.quit()
 
 if __name__ == "__main__":
